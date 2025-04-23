@@ -1,0 +1,82 @@
+// Define Ethiopia boundary
+var ethiopia = ee.FeatureCollection('FAO/GAUL/2015/level0')
+                    .filter(ee.Filter.eq('ADM0_NAME', 'Ethiopia'));
+
+// Cloud mask function for Landsat SR
+function maskLandsatSR(image) {
+  var qa = image.select('QA_PIXEL');
+  var cloudShadowBitMask = 1 << 4;
+  var cloudsBitMask = 1 << 3;
+  var mask = qa.bitwiseAnd(cloudShadowBitMask).eq(0)
+               .and(qa.bitwiseAnd(cloudsBitMask).eq(0));
+  return image.updateMask(mask);
+}
+
+// NDVI → ET proxy + Visualization + Export
+function processET(collection, year, sensor) {
+  var count = collection.size();
+  print('Image count for ' + year + ' (' + sensor + '): ', count);
+
+  var image = ee.Image(collection.median());
+  
+  // Check if the image is not empty
+  image = ee.Algorithms.If(
+    count.gt(0),
+    image,
+    ee.Image().rename('NDVI') // empty placeholder to avoid crash
+  );
+
+  image = ee.Image(image); // Cast to image object
+
+  var ndvi;
+  if (sensor === 'L5') {
+    ndvi = image.normalizedDifference(['SR_B4', 'SR_B3']).rename('NDVI');
+  } else if (sensor === 'L8') {
+    ndvi = image.normalizedDifference(['SR_B5', 'SR_B4']).rename('NDVI');
+  }
+
+  var et = ndvi.multiply(5).rename('ET_proxy'); // Simplified proxy
+
+  var visParams = {
+    min: 0,
+    max: 1,
+    palette: ['#f7fcf5', '#c7e9c0', '#74c476', '#238b45', '#00441b']
+  };
+
+  Map.addLayer(et.clip(ethiopia), visParams, 'ET - ' + year);
+  print('ET - ' + year, et);
+
+  Export.image.toDrive({
+    image: et.clip(ethiopia).toFloat(),
+    description: 'ET_Ethiopia_' + year,
+    folder: 'GEE_ET_Exports',
+    fileNamePrefix: 'ET_Ethiopia_' + year,
+    region: ethiopia.geometry(),
+    scale: 30,
+    maxPixels: 1e13
+  });
+}
+
+// Landsat 5 - ET for 2000
+var l5_2000 = ee.ImageCollection('LANDSAT/LT05/C02/T1_L2')
+  .filterBounds(ethiopia)
+  .filterDate('2000-01-01', '2000-12-31')
+  .map(maskLandsatSR);
+processET(l5_2000, '2000', 'L5');
+
+// Landsat 7 - ET for 2012 (used as replacement for L5)
+var l7_2012 = ee.ImageCollection('LANDSAT/LE07/C02/T1_L2')
+  .filterBounds(ethiopia)
+  .filterDate('2012-01-01', '2012-12-31')
+  .map(maskLandsatSR);
+processET(l7_2012, '2012', 'L5');  // Still use 'L5' band combo
+
+// Landsat 8 - ET for 2024
+var l8_2024 = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')
+  .filterBounds(ethiopia)
+  .filterDate('2024-01-01', '2024-12-31')
+  .map(maskLandsatSR);
+processET(l8_2024, '2024', 'L8');
+
+// Center map on Ethiopia
+Map.centerObject(ethiopia, 6);
